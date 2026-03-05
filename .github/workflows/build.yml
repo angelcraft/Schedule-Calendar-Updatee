@@ -14,12 +14,23 @@ jobs:
       - name: Unzip project
         run: unzip -o ShiftScheduleSync.zip
 
-      - name: Show workspace files (debug)
+      - name: Detect project root
+        id: detect
         run: |
-          echo "== Root =="
-          ls -la
-          echo "== ShiftScheduleSync (if exists) =="
-          ls -la ShiftScheduleSync || true
+          set -e
+          if [ -f build.gradle.kts ] && [ -d app ]; then
+            echo "ROOT=." >> $GITHUB_ENV
+          elif [ -f ShiftScheduleSync/build.gradle.kts ] && [ -d ShiftScheduleSync/app ]; then
+            echo "ROOT=ShiftScheduleSync" >> $GITHUB_ENV
+          else
+            echo "Could not find Android project root."
+            echo "Listing files:"
+            ls -la
+            echo "Listing ShiftScheduleSync/:"
+            ls -la ShiftScheduleSync || true
+            exit 1
+          fi
+          echo "Using ROOT=$ROOT"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -35,55 +46,107 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Patch Compose plugin (Kotlin 2)
+      # ✅ Overwrite ROOT build.gradle.kts with a correct Kotlin 2 + Compose plugin setup
+      - name: Fix root build.gradle.kts (Kotlin 2 + Compose)
         run: |
           set -e
-          # Detect project root (either in current dir or in ShiftScheduleSync/)
-          if [ -f build.gradle.kts ] && [ -d app ]; then
-            ROOT="."
-          elif [ -f ShiftScheduleSync/build.gradle.kts ] && [ -d ShiftScheduleSync/app ]; then
-            ROOT="ShiftScheduleSync"
-          else
-            echo "Could not find Android project root. Listing files:"
-            ls -la
-            exit 1
-          fi
+          cat > "$ROOT/build.gradle.kts" << 'EOF'
+          // Top-level build file.
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+              // Required for Compose with Kotlin 2.0+
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
+          }
+          EOF
+          echo "=== ROOT/build.gradle.kts ==="
+          cat "$ROOT/build.gradle.kts"
 
-          echo "Using ROOT=$ROOT"
+      # ✅ Ensure app/build.gradle.kts includes the compose plugin and doesn't use old composeOptions block
+      - name: Fix app/build.gradle.kts (Kotlin 2 + Compose)
+        run: |
+          set -e
+          # If your app/build.gradle.kts is already minimal, we can safely rewrite it to a known-good version.
+          cat > "$ROOT/app/build.gradle.kts" << 'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+          }
 
-          # 1) Add compose plugin to ROOT/build.gradle.kts if missing
-          if ! grep -q 'org.jetbrains.kotlin.plugin.compose' "$ROOT/build.gradle.kts"; then
-            sed -i 's/id("org.jetbrains.kotlin.android") version "2.0.21" apply false/id("org.jetbrains.kotlin.android") version "2.0.21" apply false\\n    id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false/' "$ROOT/build.gradle.kts"
-          fi
+          android {
+              namespace = "com.phylos.shiftschedulesync"
+              compileSdk = 35
 
-          # 2) Add compose plugin to ROOT/app/build.gradle.kts if missing
-          if ! grep -q 'org.jetbrains.kotlin.plugin.compose' "$ROOT/app/build.gradle.kts"; then
-            sed -i 's/id("org.jetbrains.kotlin.android")/id("org.jetbrains.kotlin.android")\\n    id("org.jetbrains.kotlin.plugin.compose")/' "$ROOT/app/build.gradle.kts"
-          fi
+              defaultConfig {
+                  applicationId = "com.phylos.shiftschedulesync"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "0.1.0"
+              }
 
-          # 3) Remove old composeOptions block (if present)
-          # (not needed with Kotlin 2 compose plugin)
-          sed -i '/composeOptions {/,/}/d' "$ROOT/app/build.gradle.kts"
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      proguardFiles(
+                          getDefaultProguardFile("proguard-android-optimize.txt"),
+                          "proguard-rules.pro"
+                      )
+                  }
+              }
 
-          echo "=== Patched ROOT/build.gradle.kts ==="
-          sed -n '1,120p' "$ROOT/build.gradle.kts"
-          echo "=== Patched ROOT/app/build.gradle.kts ==="
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+
+              buildFeatures { compose = true }
+
+              packaging {
+                  resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+              }
+          }
+
+          dependencies {
+              val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
+              implementation(composeBom)
+              androidTestImplementation(composeBom)
+
+              implementation("androidx.activity:activity-compose:1.9.3")
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-tooling-preview")
+              implementation("androidx.compose.material3:material3")
+              debugImplementation("androidx.compose.ui:ui-tooling")
+
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
+              implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
+              implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+              // OCR (free, on-device)
+              implementation("com.google.mlkit:text-recognition:16.0.1")
+
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+          }
+          EOF
+
+          # Ensure proguard-rules exists (Gradle can complain if referenced and missing)
+          mkdir -p "$ROOT/app"
+          touch "$ROOT/app/proguard-rules.pro"
+
+          echo "=== ROOT/app/build.gradle.kts ==="
           sed -n '1,220p' "$ROOT/app/build.gradle.kts"
 
       - name: Build Debug APK
         run: |
           set -e
-          if [ -f build.gradle.kts ] && [ -d app ]; then
-            gradle :app:assembleDebug --stacktrace
-          else
-            cd ShiftScheduleSync
-            gradle :app:assembleDebug --stacktrace
-          fi
+          cd "$ROOT"
+          gradle :app:assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ShiftScheduleSync-debug-apk
           path: |
-            app/build/outputs/apk/debug/*.apk
-            ShiftScheduleSync/app/build/outputs/apk/debug/*.apk
+            ${{ env.ROOT }}/app/build/outputs/apk/debug/*.apk
