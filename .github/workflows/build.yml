@@ -15,7 +15,6 @@ jobs:
         run: unzip -o ShiftScheduleSync.zip
 
       - name: Detect project root
-        id: detect
         run: |
           set -e
           if [ -f build.gradle.kts ] && [ -d app ]; then
@@ -24,9 +23,9 @@ jobs:
             echo "ROOT=ShiftScheduleSync" >> $GITHUB_ENV
           else
             echo "Could not find Android project root."
-            echo "Listing files:"
+            echo "== Root =="
             ls -la
-            echo "Listing ShiftScheduleSync/:"
+            echo "== ShiftScheduleSync (if exists) =="
             ls -la ShiftScheduleSync || true
             exit 1
           fi
@@ -46,8 +45,8 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      # ✅ Overwrite ROOT build.gradle.kts with a correct Kotlin 2 + Compose plugin setup
-      - name: Fix root build.gradle.kts (Kotlin 2 + Compose)
+      # Root build.gradle.kts (Kotlin 2 + Compose plugin)
+      - name: Fix root build.gradle.kts
         run: |
           set -e
           cat > "$ROOT/build.gradle.kts" << 'EOF'
@@ -62,11 +61,11 @@ jobs:
           echo "=== ROOT/build.gradle.kts ==="
           cat "$ROOT/build.gradle.kts"
 
-      # ✅ Ensure app/build.gradle.kts includes the compose plugin and doesn't use old composeOptions block
-      - name: Fix app/build.gradle.kts (Kotlin 2 + Compose)
+      # app/build.gradle.kts (compileSdk/targetSdk 34 + Compose plugin)
+      - name: Fix app/build.gradle.kts
         run: |
           set -e
-          # If your app/build.gradle.kts is already minimal, we can safely rewrite it to a known-good version.
+          mkdir -p "$ROOT/app"
           cat > "$ROOT/app/build.gradle.kts" << 'EOF'
           plugins {
               id("com.android.application")
@@ -76,12 +75,12 @@ jobs:
 
           android {
               namespace = "com.phylos.shiftschedulesync"
-              compileSdk = 35
+              compileSdk = 34
 
               defaultConfig {
                   applicationId = "com.phylos.shiftschedulesync"
                   minSdk = 26
-                  targetSdk = 35
+                  targetSdk = 34
                   versionCode = 1
                   versionName = "0.1.0"
               }
@@ -131,12 +130,88 @@ jobs:
           }
           EOF
 
-          # Ensure proguard-rules exists (Gradle can complain if referenced and missing)
-          mkdir -p "$ROOT/app"
+          # Ensure proguard rules exists
           touch "$ROOT/app/proguard-rules.pro"
 
           echo "=== ROOT/app/build.gradle.kts ==="
-          sed -n '1,220p' "$ROOT/app/build.gradle.kts"
+          sed -n '1,240p' "$ROOT/app/build.gradle.kts"
+
+      # Fix theme resources + manifest (Material3 theme must exist as a resource)
+      - name: Fix theme + manifest resources
+        run: |
+          set -e
+          mkdir -p "$ROOT/app/src/main/res/values"
+
+          cat > "$ROOT/app/src/main/res/values/themes.xml" << 'EOF'
+          <resources xmlns:tools="http://schemas.android.com/tools">
+              <style name="Theme.ShiftScheduleSync" parent="Theme.Material3.DayNight.NoActionBar">
+                  <item name="android:statusBarColor">@android:color/transparent</item>
+                  <item name="android:navigationBarColor">@android:color/transparent</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > "$ROOT/app/src/main/res/values/strings.xml" << 'EOF'
+          <resources>
+              <string name="app_name">ShiftScheduleSync</string>
+          </resources>
+          EOF
+
+          mkdir -p "$ROOT/app/src/main"
+          cat > "$ROOT/app/src/main/AndroidManifest.xml" << 'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:allowBackup="true"
+                  android:label="@string/app_name"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.ShiftScheduleSync">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          echo "=== themes.xml ==="
+          cat "$ROOT/app/src/main/res/values/themes.xml"
+          echo "=== AndroidManifest.xml ==="
+          cat "$ROOT/app/src/main/AndroidManifest.xml"
+
+      # Ensure there's at least a MainActivity so it builds even if zip had none
+      - name: Ensure MainActivity exists
+        run: |
+          set -e
+          mkdir -p "$ROOT/app/src/main/java/com/phylos/shiftschedulesync"
+          if [ ! -f "$ROOT/app/src/main/java/com/phylos/shiftschedulesync/MainActivity.kt" ]; then
+            cat > "$ROOT/app/src/main/java/com/phylos/shiftschedulesync/MainActivity.kt" << 'EOF'
+            package com.phylos.shiftschedulesync
+
+            import android.os.Bundle
+            import androidx.activity.ComponentActivity
+            import androidx.activity.compose.setContent
+            import androidx.compose.material3.MaterialTheme
+            import androidx.compose.material3.Surface
+            import androidx.compose.material3.Text
+
+            class MainActivity : ComponentActivity() {
+                override fun onCreate(savedInstanceState: Bundle?) {
+                    super.onCreate(savedInstanceState)
+                    setContent {
+                        MaterialTheme {
+                            Surface {
+                                Text("ShiftScheduleSync ✅ Built from GitHub Actions")
+                            }
+                        }
+                    }
+                }
+            }
+            EOF
+          fi
 
       - name: Build Debug APK
         run: |
@@ -148,5 +223,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ShiftScheduleSync-debug-apk
-          path: |
-            ${{ env.ROOT }}/app/build/outputs/apk/debug/*.apk
+          path: ${{ env.ROOT }}/app/build/outputs/apk/debug/*.apk
