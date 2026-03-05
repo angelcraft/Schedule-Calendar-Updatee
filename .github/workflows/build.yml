@@ -18,14 +18,12 @@ jobs:
         run: |
           set -e
           if [ -f build.gradle.kts ] && [ -d app ]; then
-            echo "ROOT=." >> $GITHUB_ENV
+            echo "ROOT=." >> "$GITHUB_ENV"
           elif [ -f ShiftScheduleSync/build.gradle.kts ] && [ -d ShiftScheduleSync/app ]; then
-            echo "ROOT=ShiftScheduleSync" >> $GITHUB_ENV
+            echo "ROOT=ShiftScheduleSync" >> "$GITHUB_ENV"
           else
             echo "Could not find Android project root."
-            echo "== Root =="
             ls -la
-            echo "== ShiftScheduleSync (if exists) =="
             ls -la ShiftScheduleSync || true
             exit 1
           fi
@@ -45,28 +43,24 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      # Root build.gradle.kts (Kotlin 2 + Compose plugin)
-      - name: Fix root build.gradle.kts
+      - name: Patch project files (safe)
         run: |
           set -e
-          cat > "$ROOT/build.gradle.kts" << 'EOF'
+          cd "$ROOT"
+
+          # ---- root build.gradle.kts ----
+          cat > build.gradle.kts <<EOF
           // Top-level build file.
           plugins {
               id("com.android.application") version "8.5.2" apply false
               id("org.jetbrains.kotlin.android") version "2.0.21" apply false
-              // Required for Compose with Kotlin 2.0+
               id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
           }
           EOF
-          echo "=== ROOT/build.gradle.kts ==="
-          cat "$ROOT/build.gradle.kts"
 
-      # app/build.gradle.kts (compileSdk/targetSdk 34 + Compose plugin)
-      - name: Fix app/build.gradle.kts
-        run: |
-          set -e
-          mkdir -p "$ROOT/app"
-          cat > "$ROOT/app/build.gradle.kts" << 'EOF'
+          # ---- app/build.gradle.kts ----
+          mkdir -p app
+          cat > app/build.gradle.kts <<EOF
           plugins {
               id("com.android.application")
               id("org.jetbrains.kotlin.android")
@@ -122,27 +116,23 @@ jobs:
               implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
               implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
               implementation("androidx.datastore:datastore-preferences:1.1.1")
-
-              // OCR (free, on-device)
               implementation("com.google.mlkit:text-recognition:16.0.1")
-
               implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
           }
           EOF
 
-          # Ensure proguard rules exists
-          touch "$ROOT/app/proguard-rules.pro"
+          touch app/proguard-rules.pro
 
-          echo "=== ROOT/app/build.gradle.kts ==="
-          sed -n '1,240p' "$ROOT/app/build.gradle.kts"
+          # ---- resources ----
+          mkdir -p app/src/main/res/values
 
-      # Fix theme resources + manifest (Material3 theme must exist as a resource)
-      - name: Fix theme + manifest resources
-        run: |
-          set -e
-          mkdir -p "$ROOT/app/src/main/res/values"
+          cat > app/src/main/res/values/strings.xml <<EOF
+          <resources>
+              <string name="app_name">ShiftScheduleSync</string>
+          </resources>
+          EOF
 
-          cat > "$ROOT/app/src/main/res/values/themes.xml" << 'EOF'
+          cat > app/src/main/res/values/themes.xml <<EOF
           <resources xmlns:tools="http://schemas.android.com/tools">
               <style name="Theme.ShiftScheduleSync" parent="Theme.Material3.DayNight.NoActionBar">
                   <item name="android:statusBarColor">@android:color/transparent</item>
@@ -151,14 +141,8 @@ jobs:
           </resources>
           EOF
 
-          cat > "$ROOT/app/src/main/res/values/strings.xml" << 'EOF'
-          <resources>
-              <string name="app_name">ShiftScheduleSync</string>
-          </resources>
-          EOF
-
-          mkdir -p "$ROOT/app/src/main"
-          cat > "$ROOT/app/src/main/AndroidManifest.xml" << 'EOF'
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<EOF
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <application
                   android:allowBackup="true"
@@ -177,41 +161,35 @@ jobs:
           </manifest>
           EOF
 
-          echo "=== themes.xml ==="
-          cat "$ROOT/app/src/main/res/values/themes.xml"
-          echo "=== AndroidManifest.xml ==="
-          cat "$ROOT/app/src/main/AndroidManifest.xml"
+          # ---- ensure MainActivity ----
+          mkdir -p app/src/main/java/com/phylos/shiftschedulesync
+          if [ ! -f app/src/main/java/com/phylos/shiftschedulesync/MainActivity.kt ]; then
+            cat > app/src/main/java/com/phylos/shiftschedulesync/MainActivity.kt <<EOF
+          package com.phylos.shiftschedulesync
 
-      # Ensure there's at least a MainActivity so it builds even if zip had none
-      - name: Ensure MainActivity exists
-        run: |
-          set -e
-          mkdir -p "$ROOT/app/src/main/java/com/phylos/shiftschedulesync"
-          if [ ! -f "$ROOT/app/src/main/java/com/phylos/shiftschedulesync/MainActivity.kt" ]; then
-            cat > "$ROOT/app/src/main/java/com/phylos/shiftschedulesync/MainActivity.kt" << 'EOF'
-            package com.phylos.shiftschedulesync
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Surface
+          import androidx.compose.material3.Text
 
-            import android.os.Bundle
-            import androidx.activity.ComponentActivity
-            import androidx.activity.compose.setContent
-            import androidx.compose.material3.MaterialTheme
-            import androidx.compose.material3.Surface
-            import androidx.compose.material3.Text
-
-            class MainActivity : ComponentActivity() {
-                override fun onCreate(savedInstanceState: Bundle?) {
-                    super.onCreate(savedInstanceState)
-                    setContent {
-                        MaterialTheme {
-                            Surface {
-                                Text("ShiftScheduleSync ✅ Built from GitHub Actions")
-                            }
-                        }
-                    }
-                }
-            }
-            EOF
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent {
+                      MaterialTheme {
+                          Surface {
+                              Text("ShiftScheduleSync ✅ Built from GitHub Actions")
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
           fi
+
+          echo "Patched OK."
 
       - name: Build Debug APK
         run: |
