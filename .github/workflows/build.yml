@@ -12,22 +12,78 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Unzip project
-        run: unzip ShiftScheduleSync.zip
+        run: unzip -o ShiftScheduleSync.zip
 
-      - name: Set up JDK
+      - name: Show workspace files (debug)
+        run: |
+          echo "== Root =="
+          ls -la
+          echo "== ShiftScheduleSync (if exists) =="
+          ls -la ShiftScheduleSync || true
+
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: "temurin"
+          java-version: "17"
 
-      - name: Install Gradle
-        uses: gradle/actions/setup-gradle@v3
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Build APK
-        run: gradle :app:assembleDebug
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Patch Compose plugin (Kotlin 2)
+        run: |
+          set -e
+          # Detect project root (either in current dir or in ShiftScheduleSync/)
+          if [ -f build.gradle.kts ] && [ -d app ]; then
+            ROOT="."
+          elif [ -f ShiftScheduleSync/build.gradle.kts ] && [ -d ShiftScheduleSync/app ]; then
+            ROOT="ShiftScheduleSync"
+          else
+            echo "Could not find Android project root. Listing files:"
+            ls -la
+            exit 1
+          fi
+
+          echo "Using ROOT=$ROOT"
+
+          # 1) Add compose plugin to ROOT/build.gradle.kts if missing
+          if ! grep -q 'org.jetbrains.kotlin.plugin.compose' "$ROOT/build.gradle.kts"; then
+            sed -i 's/id("org.jetbrains.kotlin.android") version "2.0.21" apply false/id("org.jetbrains.kotlin.android") version "2.0.21" apply false\\n    id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false/' "$ROOT/build.gradle.kts"
+          fi
+
+          # 2) Add compose plugin to ROOT/app/build.gradle.kts if missing
+          if ! grep -q 'org.jetbrains.kotlin.plugin.compose' "$ROOT/app/build.gradle.kts"; then
+            sed -i 's/id("org.jetbrains.kotlin.android")/id("org.jetbrains.kotlin.android")\\n    id("org.jetbrains.kotlin.plugin.compose")/' "$ROOT/app/build.gradle.kts"
+          fi
+
+          # 3) Remove old composeOptions block (if present)
+          # (not needed with Kotlin 2 compose plugin)
+          sed -i '/composeOptions {/,/}/d' "$ROOT/app/build.gradle.kts"
+
+          echo "=== Patched ROOT/build.gradle.kts ==="
+          sed -n '1,120p' "$ROOT/build.gradle.kts"
+          echo "=== Patched ROOT/app/build.gradle.kts ==="
+          sed -n '1,220p' "$ROOT/app/build.gradle.kts"
+
+      - name: Build Debug APK
+        run: |
+          set -e
+          if [ -f build.gradle.kts ] && [ -d app ]; then
+            gradle :app:assembleDebug --stacktrace
+          else
+            cd ShiftScheduleSync
+            gradle :app:assembleDebug --stacktrace
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: ShiftScheduleSync-debug-apk
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            ShiftScheduleSync/app/build/outputs/apk/debug/*.apk
