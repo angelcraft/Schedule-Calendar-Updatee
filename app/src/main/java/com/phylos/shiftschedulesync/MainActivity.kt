@@ -276,34 +276,56 @@ private suspend fun processAllSchedules(context: Context): List<PersonSchedule> 
 
     for (uri in uris) {
         val rawBitmap = loadBitmap(resolver, uri) ?: continue
-        val tableBitmap = OpenCvScheduleEngine.preprocessSchedule(rawBitmap)
 
-        val cellMatrix = OpenCvScheduleEngine.extractGrid(tableBitmap)
-        if (cellMatrix.rows.size > 1) {
-            for (rowIndex in 1 until cellMatrix.rows.size) {
-                val row = cellMatrix.rows[rowIndex]
-                if (row.isEmpty()) continue
+        var parsedSomething = false
 
-                val nameText = recognizeCell(recognizer, row.first())
-                val personName = normalizeMainName(nameText) ?: continue
+        // 1) Intento OpenCV + OCR por celdas
+        runCatching {
+            val tableBitmap = OpenCvScheduleEngine.preprocessSchedule(rawBitmap)
+            val cellMatrix = OpenCvScheduleEngine.extractGrid(tableBitmap)
 
-                val dayMap = mutableMapOf<DayKey, String>()
-                val dayCells = row.drop(1).take(7)
+            if (cellMatrix.rows.size > 1) {
+                for (rowIndex in 1 until cellMatrix.rows.size) {
+                    val row = cellMatrix.rows[rowIndex]
+                    if (row.isEmpty()) continue
 
-                DayKey.entries.forEachIndexed { index, day ->
-                    val cellBmp = dayCells.getOrNull(index)
-                    val text = if (cellBmp != null) recognizeCell(recognizer, cellBmp) else ""
-                    dayMap[day] = normalizeShiftText(text)
-                }
+                    val nameText = recognizeCell(recognizer, row.first())
+                    val personName = normalizeMainName(nameText) ?: continue
 
-                val schedule = PersonSchedule(personName, dayMap)
-                if (schedule.days.values.any { it.isNotBlank() }) {
-                    all[personName] = schedule
+                    val dayMap = mutableMapOf<DayKey, String>()
+                    val dayCells = row.drop(1).take(7)
+
+                    DayKey.entries.forEachIndexed { index, day ->
+                        val cellBmp = dayCells.getOrNull(index)
+                        val text = if (cellBmp != null) recognizeCell(recognizer, cellBmp) else ""
+                        dayMap[day] = normalizeShiftText(text)
+                    }
+
+                    val schedule = PersonSchedule(personName, dayMap)
+                    if (schedule.days.values.any { it.isNotBlank() }) {
+                        all[personName] = schedule
+                        parsedSomething = true
+                    }
                 }
             }
         }
 
-        moveDownloadItem(resolver, uri, "Download/Schedules/Synced")
+        // 2) Fallback: OCR completo + posiciones
+        if (!parsedSomething) {
+            val image = InputImage.fromBitmap(rawBitmap, 0)
+            val result = recognizer.process(image).await()
+            val words = extractWords(result)
+            val fallbackSchedules = buildSchedulesFromWords(words)
+
+            fallbackSchedules.forEach { schedule ->
+                all[schedule.displayName] = schedule
+                parsedSomething = true
+            }
+        }
+
+        if (parsedSomething) {
+            moveDownloadItem(resolver, uri, "Download/Schedules/Synced")
+        }
     }
 
     val result = all.values.sortedBy { it.displayName }
@@ -318,6 +340,113 @@ private suspend fun recognizeCell(
     val image = InputImage.fromBitmap(bitmap, 0)
     return recognizer.process(image).await().text
 }
+private data class OcrWord(
+    val text: String,
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int
+) {
+    val centerX: Int get() = (left + right) / 2
+    val centerY: Int get() = (top + bottom) / 2
+}
+
+private fun extractWords(result: com.google.mlkit.vision.text.Text): List<OcrWord> {
+    val out = mutableListOf<OcrWord>()
+    for (block in result.textBlocks) {
+        for (line in block.lines) {
+            for (element in line.elements) {
+                val box = element.boundingBox ?: continue
+                val text = element.text.trim()
+                if (text.isNotBlank()) {
+                    out += OcrWord(
+                        text = text,
+                        left = box.left,
+                        top = box.top,
+                        right = box.right,
+                        bottom = box.bottom
+                    )
+                }
+            }
+        }
+    }
+    return out
+}
+
+private val bannedNameTokens = setOf(
+    "LIB", "LIBRE", "VAC", "VACACIONES", "HSIN", "OFF",
+    "OY-3", "LIE", "LUB", "SN", "HS", "L", "M", "X", "J", "V", "S", "D"
+)
+
+private fun detectNamesFromLeftColumn(words: List<OcrWord>): List<Pair<String, Int>> {
+    if (words.isEmpty()) return emptyList()
+
+    val maxX = words.maxOf { it.right }
+    val leftLimit = (maxX * 0.28f).toInt()
+
+    val candidates = words
+        .filter { it.left < leftLimit }
+        .sortedBy { it.top }
+
+    val grouped = mutableListOf<MutableList<OcrWord>>()
+    val rowTolerance = 26
+
+    for (word in candidates) {
+        val existing = grouped.firstOrNull { group ->
+            kotlin.math.abs(group.first().centerY - word.centerY) <= rowTolerance
+        }
+        if (existing != null) {
+            existing += word
+        } else {
+            grouped += mutableListOf(word)
+        }
+    }
+
+    return grouped.mapNotNull { row ->
+        val rowText = row.sortedBy { it.left }.joinToString(" ") { it.text }
+        val name = normalizeMainName(rowText) ?: return@mapNotNull null
+        name to row.first().centerY
+    }.distinctBy { it.first }
+}
+
+private fun buildSchedulesFromWords(words: List<OcrWord>): List<PersonSchedule> {
+    if (words.isEmpty()) return emptyList()
+
+    val nameRows = detectNamesFromLeftColumn(words)
+    if (nameRows.isEmpty()) return emptyList()
+
+    val maxX = words.maxOf { it.right }
+    val nameColWidth = (maxX * 0.28f).toInt()
+    val usableWidth = (maxX - nameColWidth).coerceAtLeast(1)
+    val dayWidth = usableWidth / 7f
+    val yTolerance = 28
+
+    return nameRows.map { (name, rowY) ->
+        val rowWords = words.filter {
+            kotlin.math.abs(it.centerY - rowY) <= yTolerance && it.left > nameColWidth
+        }
+
+        val dayMap = mutableMapOf<DayKey, String>()
+        DayKey.entries.forEachIndexed { index, day ->
+            val startX = nameColWidth + (index * dayWidth)
+            val endX = nameColWidth + ((index + 1) * dayWidth)
+
+            val bucketText = rowWords
+                .filter { it.centerX in startX.toInt()..endX.toInt() }
+                .sortedBy { it.left }
+                .joinToString(" ") { it.text }
+
+            dayMap[day] = normalizeShiftText(bucketText)
+        }
+
+        PersonSchedule(
+            displayName = name,
+            days = dayMap
+        )
+    }.filter { schedule ->
+        schedule.days.values.any { it.isNotBlank() }
+    }
+}
 
 private fun normalizeMainName(raw: String): String? {
     val cleaned = raw
@@ -330,13 +459,14 @@ private fun normalizeMainName(raw: String): String? {
     if (first.length < 3) return null
     if (!first.first().isLetter()) return null
 
-    val banned = setOf("LIB", "LIBRE", "VAC", "VACACIONES", "HSIN", "OFF", "L")
     val upper = first.uppercase(Locale.getDefault())
-    if (upper in banned) return null
+    if (upper in bannedNameTokens) return null
     if (Regex("^\\d+$").matches(first)) return null
     if (Regex("^\\d{1,2}[:-]\\d{1,2}$").matches(first)) return null
 
-    return first.lowercase(Locale.getDefault()).replaceFirstChar { it.titlecase(Locale.getDefault()) }
+    return first.lowercase(Locale.getDefault()).replaceFirstChar {
+        it.titlecase(Locale.getDefault())
+    }
 }
 
 private fun normalizeShiftText(raw: String): String {
