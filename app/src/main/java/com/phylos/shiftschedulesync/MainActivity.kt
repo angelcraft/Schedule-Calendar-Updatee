@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class UiStatus { IDLE, SAVING, PROCESSING, DONE, ERROR }
-private enum class DayKey { MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY }
+enum class DayKey { MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY }
 
 data class PersonSchedule(
     val displayName: String,
