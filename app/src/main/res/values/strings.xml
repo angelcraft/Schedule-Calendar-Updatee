@@ -1,16 +1,17 @@
 <resources>
     <string name="app_name">ShiftScheduleSync</string>
     <string name="upload">Upload</string>
-    <string name="process_now">Process</string>
+    <string name="process">Process</string>
     <string name="select_name">Select a name</string>
     <string name="selected_name">Selected: %1$s</string>
-    <string name="detected_names">Detected names</string>
     <string name="schedule_preview">Schedule preview</string>
+    <string name="images_selected">Selected images: %1$d</string>
     <string name="status_idle">Idle</string>
     <string name="status_saving">Saving images…</string>
     <string name="status_processing">Processing images…</string>
     <string name="status_done">Done</string>
     <string name="status_error">Error: %1$s</string>
+    <string name="status_opencv_ready">OpenCV ready</string>
     <string name="empty_state">No schedules loaded yet.</string>
     <string name="no_schedule_for_name">No schedule found for this name.</string>
     <string name="name">Name</string>

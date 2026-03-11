@@ -11,9 +11,8 @@ android {
         applicationId = "com.phylos.shiftschedulesync"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.3.0"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        versionCode = 4
+        versionName = "0.4.0"
     }
 
     buildTypes {
@@ -65,8 +64,5 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     implementation("com.google.mlkit:text-recognition:16.0.1")
-
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    implementation("org.opencv:opencv:4.9.0")
 }

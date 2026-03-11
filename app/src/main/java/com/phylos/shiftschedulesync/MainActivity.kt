@@ -20,14 +20,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -37,34 +34,24 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,29 +66,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class UiStatus {
-    IDLE, SAVING, PROCESSING, DONE, ERROR
-}
+private enum class UiStatus { IDLE, SAVING, PROCESSING, DONE, ERROR }
+private enum class DayKey { MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY }
 
-private enum class DayKey {
-    MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY
-}
-
-private data class PersonSchedule(
+data class PersonSchedule(
     val displayName: String,
     val days: Map<DayKey, String>
 )
-
-private data class OcrWord(
-    val text: String,
-    val left: Int,
-    val top: Int,
-    val right: Int,
-    val bottom: Int
-) {
-    val centerX: Int get() = (left + right) / 2
-    val centerY: Int get() = (top + bottom) / 2
-}
 
 @Composable
 private fun ShiftScheduleApp() {
@@ -110,26 +81,24 @@ private fun ShiftScheduleApp() {
 
     var status by remember { mutableStateOf(UiStatus.IDLE) }
     var errorText by remember { mutableStateOf("") }
-
-    val detectedNames = remember { mutableStateListOf<String>() }
-    val schedulesMap = remember { mutableStateMapOf<String, PersonSchedule>() }
-
-    var selectedName by remember { mutableStateOf<String?>(null) }
     var selectedImagesCount by remember { mutableStateOf(0) }
+
+    val schedulesMap = remember { mutableStateMapOf<String, PersonSchedule>() }
+    val detectedNames = remember { mutableStateListOf<String>() }
+    var selectedName by remember { mutableStateOf<String?>(null) }
 
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 30)
     ) { uris ->
         if (uris.isNotEmpty()) {
             scope.launch {
-                status = UiStatus.SAVING
-                errorText = ""
                 try {
-                    val saved = withContext(Dispatchers.IO) {
+                    status = UiStatus.SAVING
+                    errorText = ""
+                    withContext(Dispatchers.IO) {
                         uris.forEach { saveOneToDownloads(context.contentResolver, it) }
-                        uris.size
                     }
-                    selectedImagesCount = saved
+                    selectedImagesCount = uris.size
                     status = UiStatus.DONE
                 } catch (t: Throwable) {
                     errorText = t.message ?: "Unknown save error"
@@ -142,15 +111,10 @@ private fun ShiftScheduleApp() {
     val selectedSchedule = selectedName?.let { schedulesMap[it] }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            text = "ShiftScheduleSync",
-            style = MaterialTheme.typography.headlineMedium
-        )
+        Text("ShiftScheduleSync", style = MaterialTheme.typography.headlineMedium)
 
         Button(
             onClick = {
@@ -158,54 +122,44 @@ private fun ShiftScheduleApp() {
                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                 )
             },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(72.dp)
+            modifier = Modifier.fillMaxWidth().height(72.dp)
         ) {
-            Text(text = stringResource(R.string.upload))
+            Text(stringResource(R.string.upload))
         }
 
-        Text(text = "Imágenes seleccionadas: $selectedImagesCount")
+        Text(stringResource(R.string.images_selected, selectedImagesCount))
 
         Button(
             onClick = {
                 scope.launch {
-                    status = UiStatus.PROCESSING
-                    errorText = ""
                     try {
-                        val result = withContext(Dispatchers.IO) {
-                            processAllSchedules(context)
-                        }
-
-                        detectedNames.clear()
-                        detectedNames.addAll(result.map { it.displayName }.sorted())
-
+                        status = UiStatus.PROCESSING
+                        errorText = ""
+                        val result = withContext(Dispatchers.IO) { processAllSchedules(context) }
                         schedulesMap.clear()
-                        result.forEach { schedulesMap[it.displayName] = it }
-
-                        if (detectedNames.isNotEmpty()) {
-                            selectedName = detectedNames.first()
+                        detectedNames.clear()
+                        result.forEach {
+                            schedulesMap[it.displayName] = it
+                            detectedNames += it.displayName
                         }
-
+                        selectedName = detectedNames.firstOrNull()
                         status = UiStatus.DONE
                     } catch (t: Throwable) {
-                        errorText = t.message ?: "Unknown processing error"
+                        errorText = t.message ?: "Unknown process error"
                         status = UiStatus.ERROR
                     }
                 }
             },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(72.dp)
+            modifier = Modifier.fillMaxWidth().height(72.dp)
         ) {
-            Text(text = stringResource(R.string.process_now))
+            Text(stringResource(R.string.process))
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp)) {
+        Card(Modifier.fillMaxWidth()) {
+            Box(Modifier.padding(12.dp)) {
                 Text(
-                    text = when (status) {
-                        UiStatus.IDLE -> stringResource(R.string.status_idle)
+                    when (status) {
+                        UiStatus.IDLE -> stringResource(R.string.status_opencv_ready)
                         UiStatus.SAVING -> stringResource(R.string.status_saving)
                         UiStatus.PROCESSING -> stringResource(R.string.status_processing)
                         UiStatus.DONE -> stringResource(R.string.status_done)
@@ -215,8 +169,8 @@ private fun ShiftScheduleApp() {
             }
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = selectedName?.let { stringResource(R.string.selected_name, it) }
                         ?: stringResource(R.string.select_name),
@@ -224,26 +178,18 @@ private fun ShiftScheduleApp() {
                 )
 
                 if (detectedNames.isEmpty()) {
-                    Text(text = stringResource(R.string.empty_state))
+                    Text(stringResource(R.string.empty_state))
                 } else {
-                    PersonDropdown(
-                        people = detectedNames,
-                        selected = selectedName ?: "",
-                        onSelect = { selectedName = it }
-                    )
+                    PersonDropdown(detectedNames, selectedName ?: "") { selectedName = it }
                 }
             }
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = stringResource(R.string.schedule_preview),
-                    style = MaterialTheme.typography.titleMedium
-                )
-
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.schedule_preview), style = MaterialTheme.typography.titleMedium)
                 if (selectedSchedule == null) {
-                    Text(text = stringResource(R.string.no_schedule_for_name))
+                    Text(stringResource(R.string.no_schedule_for_name))
                 } else {
                     SchedulePreviewTable(selectedSchedule)
                 }
@@ -253,22 +199,13 @@ private fun ShiftScheduleApp() {
 }
 
 @Composable
-private fun PersonDropdown(
-    people: List<String>,
-    selected: String,
-    onSelect: (String) -> Unit
-) {
+private fun PersonDropdown(people: List<String>, selected: String, onSelect: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-
     Box {
         Button(onClick = { expanded = true }) {
             Text(if (selected.isBlank()) stringResource(R.string.select_name) else selected)
         }
-
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             people.forEach { person ->
                 DropdownMenuItem(
                     text = { Text(person) },
@@ -284,8 +221,6 @@ private fun PersonDropdown(
 
 @Composable
 private fun SchedulePreviewTable(schedule: PersonSchedule) {
-    val scroll = rememberScrollState()
-
     val headers = listOf(
         stringResource(R.string.name),
         stringResource(R.string.monday),
@@ -296,7 +231,6 @@ private fun SchedulePreviewTable(schedule: PersonSchedule) {
         stringResource(R.string.saturday),
         stringResource(R.string.sunday)
     )
-
     val values = listOf(
         schedule.displayName,
         schedule.days[DayKey.MONDAY].orEmpty(),
@@ -307,14 +241,11 @@ private fun SchedulePreviewTable(schedule: PersonSchedule) {
         schedule.days[DayKey.SATURDAY].orEmpty(),
         schedule.days[DayKey.SUNDAY].orEmpty()
     )
+    val scroll = rememberScrollState()
 
-    Column(modifier = Modifier.horizontalScroll(scroll)) {
-        Row {
-            headers.forEach { Cell(text = it, isHeader = true) }
-        }
-        Row {
-            values.forEach { Cell(text = if (it.isBlank()) "-" else it, isHeader = false) }
-        }
+    Column(Modifier.horizontalScroll(scroll)) {
+        Row { headers.forEach { Cell(it, true) } }
+        Row { values.forEach { Cell(if (it.isBlank()) "-" else it, false) } }
     }
 }
 
@@ -325,129 +256,87 @@ private fun Cell(text: String, isHeader: Boolean) {
             .width(120.dp)
             .padding(3.dp)
             .background(
-                color = if (isHeader) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(8.dp)
+                if (isHeader) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(8.dp)
             )
             .padding(10.dp),
         contentAlignment = Alignment.CenterStart
     ) {
-        Text(text = text)
+        Text(text)
     }
 }
 
 private suspend fun processAllSchedules(context: Context): List<PersonSchedule> {
+    OpenCvScheduleEngine.ensureInitialized()
+
     val resolver = context.contentResolver
     val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    val uris = queryDownloadsFolderUris(resolver, "Download/Schedules/toSync")
+    val all = linkedMapOf<String, PersonSchedule>()
 
-    val toSyncUris = queryDownloadsFolderUris(resolver, "Download/Schedules/toSync")
-    val allSchedules = linkedMapOf<String, PersonSchedule>()
+    for (uri in uris) {
+        val rawBitmap = loadBitmap(resolver, uri) ?: continue
+        val tableBitmap = OpenCvScheduleEngine.preprocessSchedule(rawBitmap)
 
-    for (uri in toSyncUris) {
-        val bitmap = loadBitmap(resolver, uri) ?: continue
-        val image = InputImage.fromBitmap(bitmap, 0)
-        val result = recognizer.process(image).await()
+        val cellMatrix = OpenCvScheduleEngine.extractGrid(tableBitmap)
+        if (cellMatrix.rows.size > 1) {
+            for (rowIndex in 1 until cellMatrix.rows.size) {
+                val row = cellMatrix.rows[rowIndex]
+                if (row.isEmpty()) continue
 
-        val words = extractWords(result)
-        val schedules = buildSchedulesFromWords(words)
+                val nameText = recognizeCell(recognizer, row.first())
+                val personName = normalizeMainName(nameText) ?: continue
 
-        schedules.forEach { schedule ->
-            allSchedules[schedule.displayName] = schedule
+                val dayMap = mutableMapOf<DayKey, String>()
+                val dayCells = row.drop(1).take(7)
+
+                DayKey.entries.forEachIndexed { index, day ->
+                    val cellBmp = dayCells.getOrNull(index)
+                    val text = if (cellBmp != null) recognizeCell(recognizer, cellBmp) else ""
+                    dayMap[day] = normalizeShiftText(text)
+                }
+
+                val schedule = PersonSchedule(personName, dayMap)
+                if (schedule.days.values.any { it.isNotBlank() }) {
+                    all[personName] = schedule
+                }
+            }
         }
 
         moveDownloadItem(resolver, uri, "Download/Schedules/Synced")
     }
 
-    val finalSchedules = allSchedules.values.sortedBy { it.displayName }
-    exportCsv(resolver, finalSchedules)
-
-    return finalSchedules
+    val result = all.values.sortedBy { it.displayName }
+    exportCsv(resolver, result)
+    return result
 }
 
-private fun extractWords(result: Text): List<OcrWord> {
-    val out = mutableListOf<OcrWord>()
-    for (block in result.textBlocks) {
-        for (line in block.lines) {
-            for (element in line.elements) {
-                val box = element.boundingBox ?: continue
-                val text = element.text.trim()
-                if (text.isNotBlank()) {
-                    out += OcrWord(
-                        text = text,
-                        left = box.left,
-                        top = box.top,
-                        right = box.right,
-                        bottom = box.bottom
-                    )
-                }
-            }
-        }
-    }
-    return out
+private suspend fun recognizeCell(
+    recognizer: com.google.mlkit.vision.text.TextRecognizer,
+    bitmap: Bitmap
+): String {
+    val image = InputImage.fromBitmap(bitmap, 0)
+    return recognizer.process(image).await().text
 }
-
-private val bannedNameTokens = setOf(
-    "LIB", "LIBRE", "VAC", "VACACIONES", "HSIN", "OFF",
-    "OY-3", "LIE", "LUB", "SN", "H", "HS"
-)
 
 private fun normalizeMainName(raw: String): String? {
     val cleaned = raw
         .replace("•", "")
         .replace("·", "")
-        .replace(",", " ")
-        .replace(".", " ")
-        .replace("(", " ")
-        .replace(")", " ")
+        .replace(Regex("[()\\[\\],.]"), " ")
         .trim()
 
-    val first = cleaned
-        .split(Regex("\\s+"))
-        .firstOrNull()
-        ?.trim()
-        .orEmpty()
-
+    val first = cleaned.split(Regex("\\s+")).firstOrNull().orEmpty()
     if (first.length < 3) return null
     if (!first.first().isLetter()) return null
 
+    val banned = setOf("LIB", "LIBRE", "VAC", "VACACIONES", "HSIN", "OFF", "L")
     val upper = first.uppercase(Locale.getDefault())
-    if (upper in bannedNameTokens) return null
-    if (Regex("""^\d+$""").matches(first)) return null
-    if (Regex("""^\d{1,2}[:-]\d{1,2}$""").matches(first)) return null
+    if (upper in banned) return null
+    if (Regex("^\\d+$").matches(first)) return null
+    if (Regex("^\\d{1,2}[:-]\\d{1,2}$").matches(first)) return null
 
-    return first.lowercase(Locale.getDefault())
-        .replaceFirstChar { it.titlecase(Locale.getDefault()) }
-}
-
-private fun detectNamesFromLeftColumn(words: List<OcrWord>): List<Pair<String, Int>> {
-    if (words.isEmpty()) return emptyList()
-
-    val maxX = words.maxOf { it.right }
-    val leftLimit = (maxX * 0.28f).toInt()
-
-    val candidates = words
-        .filter { it.left < leftLimit }
-        .sortedBy { it.top }
-
-    val grouped = mutableListOf<MutableList<OcrWord>>()
-    val rowTolerance = 26
-
-    for (word in candidates) {
-        val existing = grouped.firstOrNull { group ->
-            abs(group.first().centerY - word.centerY) <= rowTolerance
-        }
-        if (existing != null) {
-            existing += word
-        } else {
-            grouped += mutableListOf(word)
-        }
-    }
-
-    return grouped.mapNotNull { row ->
-        val rowText = row.sortedBy { it.left }.joinToString(" ") { it.text }
-        val name = normalizeMainName(rowText) ?: return@mapNotNull null
-        name to row.first().centerY
-    }.distinctBy { it.first }
+    return first.lowercase(Locale.getDefault()).replaceFirstChar { it.titlecase(Locale.getDefault()) }
 }
 
 private fun normalizeShiftText(raw: String): String {
@@ -456,11 +345,14 @@ private fun normalizeShiftText(raw: String): String {
         .replace("—", "-")
         .replace("–", "-")
         .replace("O", "0")
+        .replace(Regex("\\bSN\\b"), "")
+        .trim()
 
     if (text.contains("LIB") || text == "L" || text.contains("OFF")) return "Libre"
     if (text.contains("VAC")) return "Vac"
+    if (text.contains("HSIN")) return "HSIN"
 
-    val ranges = Regex("""(\d{1,2})(?::|\.|H)?(\d{2})?\s*-\s*(\d{1,2})(?::|\.|H)?(\d{2})?""")
+    val ranges = Regex("(\\d{1,2})(?::|\\.)?(\\d{2})?\\s*-\\s*(\\d{1,2})(?::|\\.)?(\\d{2})?")
         .findAll(text)
         .map {
             val sh = it.groupValues[1].padStart(2, '0')
@@ -476,45 +368,6 @@ private fun normalizeShiftText(raw: String): String {
     val firstStart = ranges.first().substringBefore("-")
     val lastEnd = ranges.last().substringAfter("-")
     return "$firstStart-$lastEnd"
-}
-
-private fun buildSchedulesFromWords(words: List<OcrWord>): List<PersonSchedule> {
-    if (words.isEmpty()) return emptyList()
-
-    val nameRows = detectNamesFromLeftColumn(words)
-    if (nameRows.isEmpty()) return emptyList()
-
-    val maxX = words.maxOf { it.right }
-    val nameColWidth = (maxX * 0.28f).toInt()
-    val usableWidth = (maxX - nameColWidth).coerceAtLeast(1)
-    val dayWidth = usableWidth / 7f
-    val yTolerance = 28
-
-    return nameRows.map { (name, rowY) ->
-        val rowWords = words.filter {
-            abs(it.centerY - rowY) <= yTolerance && it.left > nameColWidth
-        }
-
-        val dayMap = mutableMapOf<DayKey, String>()
-        DayKey.entries.forEachIndexed { index, day ->
-            val startX = nameColWidth + (index * dayWidth)
-            val endX = nameColWidth + ((index + 1) * dayWidth)
-
-            val bucketText = rowWords
-                .filter { it.centerX in startX.toInt()..endX.toInt() }
-                .sortedBy { it.left }
-                .joinToString(" ") { it.text }
-
-            dayMap[day] = normalizeShiftText(bucketText)
-        }
-
-        PersonSchedule(
-            displayName = name,
-            days = dayMap
-        )
-    }.filter { schedule ->
-        schedule.days.values.any { it.isNotBlank() }
-    }
 }
 
 private fun saveOneToDownloads(resolver: ContentResolver, sourceUri: Uri): Boolean {
@@ -538,7 +391,6 @@ private fun saveOneToDownloads(resolver: ContentResolver, sourceUri: Uri): Boole
     }
 
     val itemUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
-
     resolver.openInputStream(sourceUri).use { input ->
         resolver.openOutputStream(itemUri).use { output ->
             if (input == null || output == null) return false
@@ -552,15 +404,10 @@ private fun saveOneToDownloads(resolver: ContentResolver, sourceUri: Uri): Boole
         values.put(MediaStore.MediaColumns.IS_PENDING, 0)
         resolver.update(itemUri, values, null, null)
     }
-
     return true
 }
 
-private fun moveDownloadItem(
-    resolver: ContentResolver,
-    uri: Uri,
-    destinationRelativePath: String
-) {
+private fun moveDownloadItem(resolver: ContentResolver, uri: Uri, destinationRelativePath: String) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.RELATIVE_PATH, destinationRelativePath)
@@ -569,10 +416,7 @@ private fun moveDownloadItem(
     }
 }
 
-private fun exportCsv(
-    resolver: ContentResolver,
-    items: List<PersonSchedule>
-) {
+private fun exportCsv(resolver: ContentResolver, items: List<PersonSchedule>) {
     if (items.isEmpty()) return
 
     val fileName = "Horario-Semana-Que-viene.csv"
@@ -592,9 +436,7 @@ private fun exportCsv(
     }
 
     val existing = queryDownloadByName(resolver, "Download/Schedules", fileName)
-    if (existing != null) {
-        resolver.delete(existing, null, null)
-    }
+    if (existing != null) resolver.delete(existing, null, null)
 
     val values = ContentValues().apply {
         put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
@@ -624,42 +466,25 @@ private fun StringBuilder.appendCsvCell(value: String) {
     append('"')
 }
 
-private fun queryDownloadByName(
-    resolver: ContentResolver,
-    relativePath: String,
-    fileName: String
-): Uri? {
+private fun queryDownloadByName(resolver: ContentResolver, relativePath: String, fileName: String): Uri? {
     val projection = arrayOf(MediaStore.Downloads._ID)
     val relA = if (relativePath.endsWith("/")) relativePath else "$relativePath/"
     val selection =
         "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
     val args = arrayOf(relA, fileName)
 
-    resolver.query(
-        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-        projection,
-        selection,
-        args,
-        null
-    )?.use { cursor ->
+    resolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, projection, selection, args, null)?.use { cursor ->
         val idCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads._ID)
         if (cursor.moveToFirst()) {
-            return Uri.withAppendedPath(
-                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                cursor.getLong(idCol).toString()
-            )
+            return Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cursor.getLong(idCol).toString())
         }
     }
     return null
 }
 
-private fun queryDownloadsFolderUris(
-    resolver: ContentResolver,
-    relativePath: String
-): List<Uri> {
+private fun queryDownloadsFolderUris(resolver: ContentResolver, relativePath: String): List<Uri> {
     val relA = if (relativePath.endsWith("/")) relativePath else "$relativePath/"
     val relB = relativePath.removeSuffix("/")
-
     val projection = arrayOf(MediaStore.Downloads._ID)
     val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         "${MediaStore.MediaColumns.RELATIVE_PATH} = ? OR ${MediaStore.MediaColumns.RELATIVE_PATH} = ?"
@@ -676,10 +501,7 @@ private fun queryDownloadsFolderUris(
     )?.use { cursor ->
         val idCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads._ID)
         while (cursor.moveToNext()) {
-            out += Uri.withAppendedPath(
-                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                cursor.getLong(idCol).toString()
-            )
+            out += Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cursor.getLong(idCol).toString())
         }
     }
     return out
